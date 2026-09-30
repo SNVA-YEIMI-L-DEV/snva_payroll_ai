@@ -3,6 +3,8 @@ import json
 import logging
 import re
 
+from markupsafe import Markup
+
 from odoo import api, fields, models, _
 from odoo.exceptions import UserError
 
@@ -353,7 +355,7 @@ class HrPayslip(models.Model):
         return SINOVA_AUDIT_SYSTEM_PROMPT
 
     def _call_llm_audit(self, payload_dict):
-        """Call Odoo 19 AI LLM backend. Returns dict or None on failure.
+        """Call Odoo 19 AI LLM backend. Returns (dict or None, error message or None).
 
         Uses odoo.addons.ai.utils.llm_api_service.LLMApiService if available.
         Falls back to rule engine if LLM unavailable / no API key.
@@ -363,7 +365,7 @@ class HrPayslip(models.Model):
             from odoo.addons.ai.utils.llm_providers import get_provider
         except Exception as e:
             _logger.info("AI audit: LLM service not available (%s), using fallback", e)
-            return None
+            return None, _("Servicio de IA no disponible: %s", e)
 
         # Determine provider / model from ai.agent or config
         # Try to find a configured agent or use default gpt-4o / gpt-4o-mini
@@ -426,13 +428,15 @@ class HrPayslip(models.Model):
             )
             if not response_list:
                 _logger.warning("AI audit: empty LLM response")
-                return None
+                return None, _("La IA devolvió una respuesta vacía.")
             # request_llm returns list[str]; first entry is the JSON
             raw_text = response_list[0] if isinstance(response_list, list) else str(response_list)
-            return self._parse_llm_json_response(raw_text)
+            result = self._parse_llm_json_response(raw_text)
+            return result, None if result else _("No se pudo interpretar la respuesta de la IA.")
         except Exception as e:
             _logger.warning("AI audit LLM call failed: %s", e, exc_info=True)
-            return None
+            return None, _("Falló la llamada a la IA (%(provider)s / %(model)s): %(error)s",
+                           provider=provider, model=llm_model, error=e)
 
     def _parse_llm_json_response(self, raw_text):
         """Extract JSON from LLM response (may be wrapped in markdown)."""
@@ -699,7 +703,7 @@ class HrPayslip(models.Model):
         for payslip in self:
             payload = payslip._get_sinova_audit_payload()
             # Try LLM first
-            result = payslip._call_llm_audit(payload)
+            result, llm_error = payslip._call_llm_audit(payload)
             used_fallback = False
             if not result:
                 result = payslip._fallback_rule_audit(payload)
@@ -727,31 +731,29 @@ class HrPayslip(models.Model):
             payslip.write(vals)
 
             # Chatter: mensaje simple y sin duplicar JSON completo
+            # Markup para que el chatter renderice el HTML; los valores dinámicos se escapan con %
             try:
+                fallback_note = Markup(
+                    "<p style='color:#6c757d; font-size:12px;'>Auditoría por reglas locales. Motivo: %s</p>"
+                ) % (llm_error or "")
                 if ai_status == "ok":
+                    body = Markup("<p>✅ <strong>Sin hallazgos</strong> — %s</p>") % summary
                     if used_fallback:
-                        body = (
-                            f"<p>✅ <strong>Sin hallazgos</strong> — {summary}</p>"
-                            f"<p style='color:#6c757d; font-size:12px;'>Auditoría por reglas locales (sin clave API en Ajustes &gt; IA).</p>"
-                        )
-                    else:
-                        body = f"<p>✅ <strong>Sin hallazgos</strong> — {summary}</p>"
+                        body += fallback_note
                 else:
                     # warning / error: lista corta y solución
-                    body_parts = []
                     icon = "⚠️" if ai_status == "warning" else "🚨"
-                    body_parts.append(f"<p><strong>{icon} {summary}</strong></p>")
+                    body = Markup("<p><strong>%s %s</strong></p>") % (icon, summary)
                     findings = result.get("findings", []) or []
                     if findings:
-                        body_parts.append("<ul style='margin:8px 0; padding-left:18px;'>")
+                        body += Markup("<ul style='margin:8px 0; padding-left:18px;'>")
                         for f in findings[:3]:
-                            body_parts.append(f"<li>{f.get('problem','')}<br/><em>Solución: {f.get('solution','')}</em></li>")
-                        body_parts.append("</ul>")
+                            body += Markup("<li>%s<br/><em>Solución: %s</em></li>") % (f.get('problem', ''), f.get('solution', ''))
+                        body += Markup("</ul>")
                         if len(findings) > 3:
-                            body_parts.append(f"<p style='color:#6c757d; font-size:12px;'>+{len(findings)-3} hallazgo(s) más. Ver pestaña Auditoría IA.</p>")
+                            body += Markup("<p style='color:#6c757d; font-size:12px;'>+%s hallazgo(s) más. Ver pestaña Auditoría IA.</p>") % (len(findings) - 3)
                     if used_fallback:
-                        body_parts.append("<p style='color:#6c757d; font-size:12px;'>Auditoría por reglas locales (sin clave API en Ajustes &gt; IA).</p>")
-                    body = "".join(body_parts)
+                        body += fallback_note
                 # Evitar duplicado si el último mensaje ya es idéntico
                 last_msg = payslip.message_ids[:1].body if payslip.message_ids else ""
                 if body not in last_msg:
@@ -766,7 +768,8 @@ class HrPayslip(models.Model):
             # Use the used_fallback from last payslip iteration for the notification
             if used_fallback:
                 notif_title = _("Auditoría por reglas locales")
-                notif_msg = _("Sin clave API de IA configurada. Se usó motor de reglas. Estado: %s. Configure la clave en Ajustes > IA para habilitar IA.") % first.ai_audit_status
+                notif_msg = _("No se pudo usar la IA, se usó el motor de reglas. Estado: %(status)s. Motivo: %(error)s",
+                              status=first.ai_audit_status, error=llm_error)
                 notif_type = "warning"
                 notif_sticky = True
             else:
