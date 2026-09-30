@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- Smart Audit / Diagnostics on hr.payslip -->
+    <record id="view_hr_payslip_form_inherit_sinova_audit" model="ir.ui.view">
+        <field name="name">hr.payslip.form.inherit.sinova.audit</field>
+        <field name="model">hr.payslip</field>
+        <field name="inherit_id" ref="hr_payroll.view_hr_payslip_form"/>
+        <field name="arch" type="xml">
+            <!-- Non-intrusive button in header -->
+            <xpath expr="//header" position="inside">
+                <button
+                    name="action_validate_sinova_config"
+                    type="object"
+                    string="Validar Configuración (IA)"
+                    class="oe_highlight"
+                    help="Evalúa la nómina actual con IA (LLMApiService) y muestra un diagnóstico de errores de configuración."
+                    invisible="state == 'cancel'"/>
+                <button
+                    name="action_clear_ai_audit"
+                    type="object"
+                    string="Limpiar Auditoría"
+                    help="Reinicia el estado de auditoría"
+                    invisible="ai_audit_status == 'draft'"/>
+            </xpath>
+
+            <!-- Diagnostic banner - OK -->
+            <xpath expr="//sheet" position="before">
+                <div class="alert alert-success d-flex align-items-center" role="alert" invisible="ai_audit_status != 'ok'">
+                    <i class="fa fa-check-circle me-2" role="img" aria-label="OK"/>
+                    <div>
+                        <strong>Diagnóstico IA: Sin hallazgos</strong> — <field name="ai_audit_summary" readonly="1" nolabel="1" class="d-inline"/>
+                    </div>
+                </div>
+                <div class="alert alert-warning d-flex align-items-center" role="alert" invisible="ai_audit_status != 'warning'">
+                    <i class="fa fa-exclamation-triangle me-2" role="img" aria-label="Warning"/>
+                    <div class="flex-grow-1">
+                        <strong>Diagnóstico IA: Advertencia de configuración</strong>
+                        <div><field name="ai_audit_summary" readonly="1" nolabel="1"/></div>
+                        <small class="text-muted">Revise los hallazgos debajo. Detalle técnico en la pestaña Auditoría IA.</small>
+                    </div>
+                    <button name="action_validate_sinova_config" type="object" class="btn btn-link btn-sm ms-2" string="Re-validar"/>
+                </div>
+                <div class="alert alert-danger d-flex align-items-center" role="alert" invisible="ai_audit_status != 'error'">
+                    <i class="fa fa-times-circle me-2" role="img" aria-label="Error"/>
+                    <div class="flex-grow-1">
+                        <strong>Diagnóstico IA: Error crítico de configuración</strong>
+                        <div><field name="ai_audit_summary" readonly="1" nolabel="1"/></div>
+                        <small>Corrija los hallazgos antes de validar/contabilizar.</small>
+                    </div>
+                    <button name="action_validate_sinova_config" type="object" class="btn btn-sm btn-light ms-2" string="Re-validar"/>
+                </div>
+                <!-- Hidden fields to keep banner reactive -->
+                <field name="ai_audit_status" invisible="1"/>
+                <field name="ai_audit_json" invisible="1"/>
+            </xpath>
+
+            <!-- Add audit tab inside notebook -->
+            <xpath expr="//notebook" position="inside">
+                <page string="Auditoría IA" name="sinova_ai_audit">
+                    <group string="Smart Audit / Diagnostics (Sinova)">
+                        <field name="ai_audit_status" widget="badge"
+                               decoration-success="ai_audit_status == 'ok'"
+                               decoration-warning="ai_audit_status == 'warning'"
+                               decoration-danger="ai_audit_status == 'error'"
+                               decoration-info="ai_audit_status == 'draft'"/>
+                        <field name="ai_audit_summary" placeholder="Ejecute 'Validar Configuración (IA)' para obtener el diagnóstico..." readonly="1"/>
+                    </group>
+                    <group string="Detalle técnico (JSON)">
+                        <field name="ai_audit_json" widget="ace" options="{'mode': 'json'}" readonly="1" placeholder='{"status":"ok","has_issues":false,"summary":"...","findings":[]}'/>
+                    </group>
+                    <div class="alert alert-info" role="alert">
+                        <strong>Cómo funciona:</strong> El botón “Validar Configuración (IA)” serializa la nómina (empleado, contrato, días trabajados, líneas con códigos/totales, insumos y variables) y lo envía junto al System Prompt (data/ai_prompt_data.xml) al backend LLM de Odoo 19 (<code>ai.service</code> / <code>LLMApiService</code>). Si el LLM no está disponible, se usa un motor de reglas local que implementa las mismas 3 reglas de negocio. El resultado se muestra en el banner y se registra en el Chatter.
+                    </div>
+                </page>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- List view: add audit status column -->
+    <record id="view_hr_payslip_list_inherit_sinova_audit" model="ir.ui.view">
+        <field name="name">hr.payslip.list.inherit.sinova.audit</field>
+        <field name="model">hr.payslip</field>
+        <field name="inherit_id" ref="hr_payroll.view_hr_payslip_tree"/>
+        <field name="arch" type="xml">
+            <field name="state_display" position="after">
+                <field name="ai_audit_status" widget="badge"
+                       decoration-info="ai_audit_status == 'draft'"
+                       decoration-success="ai_audit_status == 'ok'"
+                       decoration-warning="ai_audit_status == 'warning'"
+                       decoration-danger="ai_audit_status == 'error'"
+                       optional="show"/>
+            </field>
+        </field>
+    </record>
+
+    <!-- Search filter for audits -->
+    <record id="view_hr_payslip_filter_inherit_sinova_audit" model="ir.ui.view">
+        <field name="name">hr.payslip.search.inherit.sinova.audit</field>
+        <field name="model">hr.payslip</field>
+        <field name="inherit_id" ref="hr_payroll.view_hr_payslip_filter"/>
+        <field name="arch" type="xml">
+            <filter name="filter_issue" position="after">
+                <separator/>
+                <filter string="Auditoría IA: OK" name="filter_ai_ok" domain="[('ai_audit_status','=','ok')]"/>
+                <filter string="Auditoría IA: Advertencia" name="filter_ai_warning" domain="[('ai_audit_status','=','warning')]"/>
+                <filter string="Auditoría IA: Error" name="filter_ai_error" domain="[('ai_audit_status','=','error')]"/>
+                <filter string="Sin Auditar" name="filter_ai_draft" domain="[('ai_audit_status','=','draft')]"/>
+            </filter>
+        </field>
+    </record>
+
+</odoo>

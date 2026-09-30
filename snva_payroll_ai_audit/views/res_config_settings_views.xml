@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_res_config_settings_form_inherit_sinova_audit" model="ir.ui.view">
+        <field name="name">res.config.settings.view.form.inherit.sinova.audit</field>
+        <field name="model">res.config.settings</field>
+        <field name="inherit_id" ref="ai.res_config_settings_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//setting[@id='google_provider']" position="after">
+                <div class="alert alert-warning mt-3" role="alert" invisible="openai_key or google_key">
+                    <strong>Sinova Payroll AI Audit:</strong> No hay clave API de IA configurada. La auditoría se ejecutará con el motor de reglas local. Para habilitar la auditoría con IA configure la clave de OpenAI o de Google arriba. Sin clave, el diagnóstico por reglas aplicará las 3 validaciones (RET_FTE, provisiones y reglas en cero).
+                </div>
+                <div class="alert alert-info mt-3" role="alert" invisible="not openai_key and not google_key">
+                    <strong>Sinova Payroll AI Audit:</strong> Auditoría con IA habilitada. Si la IA no responde, se usará automáticamente el motor de reglas local como respaldo.
+                </div>
+            </xpath>
+        </field>
+    </record>
+</odoo>
